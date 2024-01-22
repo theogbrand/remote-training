@@ -1,6 +1,6 @@
 import torch
 import os
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, BitsAndBytesConfig, DataCollatorForLanguageModeling
 from trl import SFTTrainer
 from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
 from accelerate import Accelerator
@@ -65,7 +65,6 @@ config = LoraConfig(
     target_modules = ['q_proj', 'k_proj', 'v_proj', 'gate_proj', 'o_proj'],
     lora_dropout=0.1, 
     bias="none", 
-    modules_to_save = ["lm_head", "embed_tokens"],
     task_type="CAUSAL_LM"
 )
 model = get_peft_model(model, config)
@@ -93,7 +92,7 @@ dataset_tokenized = dataset.map(
     tokenize, 
     batched=True, 
     num_proc=os.cpu_count(),    # multithreaded
-    remove_columns=["text"]     # don't need this anymore, we have tokens from here on
+    # remove_columns=["text"]     # don't need this anymore, we have tokens from here on
 )
 
 # For `PeftModel`s we can use `get_nb_trainable_parameters` to get the param counts.
@@ -137,7 +136,7 @@ args = TrainingArguments(
     gradient_accumulation_steps=ga_steps,
     num_train_epochs=epochs,
     lr_scheduler_type="constant",
-    optim="paged_adamw_32bit",
+    optim="paged_adamw_8bit",
     learning_rate=0.0002,
     group_by_length=True,
     bf16=True,
@@ -150,7 +149,11 @@ trainer = SFTTrainer(
     tokenizer=tokenizer,
     args=args,
     train_dataset=dataset_tokenized["train"],
-    eval_dataset=dataset_tokenized["test"]
+    eval_dataset=dataset_tokenized["test"],
+    max_seq_length=512,
+    packing=False,
+    dataset_text_field="text",
+    data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False),
 )
 
 model.config.use_cache = False
