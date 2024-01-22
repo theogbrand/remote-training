@@ -1,26 +1,24 @@
 import torch
 import os
-from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, BitsAndBytesConfig
+from trl import SFTTrainer
 from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
 from accelerate import Accelerator
 from datasets import load_dataset
 import wandb
 
 run = wandb.init(
-    project="mistral-pjf-f2-v2",  # Project name.
-    name="properly train",          # name of the run within this project.
-    config={                     # Configuration dictionary.
-        "split": "train"
-    },
+    project="mistral-pjf-v3",  # Project name.
+    name="init",          # name of the run within this project.
+    job_type="training",
     group="init",             # Group runs. This run belongs in "dataset".
-    tags=["init"],            # Tags. More dynamic, low-level grouping.
-    notes=""  # Description about the run.
+    notes="adapters only"  # Description about the run.
 )  # Check out the other parameters in the `wandb.init`!
 
-os.environ["WANDB_PROJECT"] = "mistral-pjf-f2-v2"
+os.environ["WANDB_PROJECT"] = "mistral-pjf-v3"
 
 # Log model when running HF Trainer reporting to wandb.
-os.environ["WANDB_LOG_MODEL"] = "checkpoint"  # Apparently this is deprecated in version 5 of transformers.
+os.environ["WANDB_LOG_MODEL"] = "end"  # Apparently this is deprecated in version 5 of transformers.
 
 # Use wandb to watch the gradients & model parameters.
 os.environ["WANDB_WATCH"] = "all"
@@ -34,7 +32,8 @@ hf_model_path="mistralai/Mistral-7B-v0.1"
 # Load model
 model = AutoModelForCausalLM.from_pretrained(
     hf_model_path,    
-    device_map={"": accelerator.process_index},
+    # device_map={"": accelerator.process_index},
+    device_map={"": 0},
     quantization_config=BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.bfloat16,
@@ -43,6 +42,10 @@ model = AutoModelForCausalLM.from_pretrained(
     torch_dtype=torch.bfloat16,
 )
 
+model.config.use_cache = False # silence the warnings. Please re-enable for inference!
+model.config.pretraining_tp = 1
+model.gradient_checkpointing_enable()
+
 # Load Tokenizer
 tokenizer = AutoTokenizer.from_pretrained(hf_model_path, use_fast=False)    # fast tokenizer sometimes ignores the added tokens
 
@@ -50,6 +53,7 @@ tokenizer = AutoTokenizer.from_pretrained(hf_model_path, use_fast=False)    # fa
 tokenizer.pad_token = "</s>"
 tokenizer.add_tokens(["<|im_start|>"])
 tokenizer.add_special_tokens(dict(eos_token="<|im_end|>"))
+tokenizer.padding_side = "left"
 model.resize_token_embeddings(len(tokenizer))
 model.config.eos_token_id = tokenizer.eos_token_id
 
@@ -58,7 +62,7 @@ model = prepare_model_for_kbit_training(model)
 config = LoraConfig(
     r=64, 
     lora_alpha=16, 
-    target_modules = ['q_proj', 'k_proj', 'down_proj', 'v_proj', 'gate_proj', 'o_proj', 'up_proj'],
+    target_modules = ['q_proj', 'k_proj', 'v_proj', 'gate_proj', 'o_proj'],
     lora_dropout=0.1, 
     bias="none", 
     modules_to_save = ["lm_head", "embed_tokens"],
@@ -119,7 +123,7 @@ def collate(elements):
 
 bs=1        # batch size
 ga_steps=1  # gradient acc. steps
-epochs=5
+epochs=1
 steps_per_epoch=len(dataset_tokenized["train"])//(accelerator.state.num_processes*bs*ga_steps)
 
 args = TrainingArguments(
@@ -141,11 +145,10 @@ args = TrainingArguments(
     report_to="wandb",
 )
 
-trainer = Trainer(
+trainer = SFTTrainer(
     model=model,
     tokenizer=tokenizer,
     args=args,
-    data_collator=collate,
     train_dataset=dataset_tokenized["train"],
     eval_dataset=dataset_tokenized["test"]
 )

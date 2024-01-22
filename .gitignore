@@ -5,3 +5,4 @@ wandb
 .ipynb_checkpoints
 results
 artifacts
+outputs
