@@ -3,16 +3,37 @@ import os
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments, Trainer, BitsAndBytesConfig
 from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
 from accelerate import Accelerator
-from datasets import load_dataset, DatasetDict, Dataset
+from datasets import load_dataset
 import wandb
+
+run = wandb.init(
+    project="mistral-pjf-f2-v2",  # Project name.
+    name="properly train",          # name of the run within this project.
+    config={                     # Configuration dictionary.
+        "split": "train"
+    },
+    group="init",             # Group runs. This run belongs in "dataset".
+    tags=["init"],            # Tags. More dynamic, low-level grouping.
+    notes=""  # Description about the run.
+)  # Check out the other parameters in the `wandb.init`!
+
+os.environ["WANDB_PROJECT"] = "mistral-pjf-f2-v2"
+
+# Log model when running HF Trainer reporting to wandb.
+os.environ["WANDB_LOG_MODEL"] = "checkpoint"  # Apparently this is deprecated in version 5 of transformers.
+
+# Use wandb to watch the gradients & model parameters.
+os.environ["WANDB_WATCH"] = "all"
+
+print("wandb log model:", os.environ.get("WANDB_LOG_MODEL"))
 
 accelerator = Accelerator()
 
-modelpath="mistralai/Mistral-7B-v0.1"
+hf_model_path="mistralai/Mistral-7B-v0.1"
 
 # Load model
 model = AutoModelForCausalLM.from_pretrained(
-    modelpath,    
+    hf_model_path,    
     device_map={"": accelerator.process_index},
     quantization_config=BitsAndBytesConfig(
         load_in_4bit=True,
@@ -23,7 +44,7 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 
 # Load Tokenizer
-tokenizer = AutoTokenizer.from_pretrained(modelpath, use_fast=False)    # fast tokenizer sometimes ignores the added tokens
+tokenizer = AutoTokenizer.from_pretrained(hf_model_path, use_fast=False)    # fast tokenizer sometimes ignores the added tokens
 
 # Add tokens <|im_start|> and <|im_end|>, latter is special eos token, 
 tokenizer.pad_token = "</s>"
@@ -46,6 +67,11 @@ config = LoraConfig(
 model = get_peft_model(model, config)
 model.config.use_cache = False
 
+import torch
+print(torch.__version__)
+print('CUDA available:', torch.cuda.is_available())
+print("model", model)
+
 # Load dataset
 dataset = load_dataset("ogbrandt/pjf_chatml_prep")
 dataset = dataset["train"].train_test_split(test_size=0.1).shuffle(seed=4242)
@@ -65,6 +91,10 @@ dataset_tokenized = dataset.map(
     num_proc=os.cpu_count(),    # multithreaded
     remove_columns=["text"]     # don't need this anymore, we have tokens from here on
 )
+
+# For `PeftModel`s we can use `get_nb_trainable_parameters` to get the param counts.
+trainable, total = model.get_nb_trainable_parameters()  # Returns a Tuple.
+print(f"Trainable: {trainable} | total: {total} | Percentage: {trainable/total*100:.4f}%")
 
 # collate function - to transform list of dictionaries [ {input_ids: [123, ..]}, {.. ] to single batch dictionary { input_ids: [..], labels: [..], attention_mask: [..] }
 def collate(elements):
@@ -93,7 +123,7 @@ epochs=5
 steps_per_epoch=len(dataset_tokenized["train"])//(accelerator.state.num_processes*bs*ga_steps)
 
 args = TrainingArguments(
-    output_dir="out",
+    output_dir="./outputs",
     per_device_train_batch_size=bs,
     per_device_eval_batch_size=bs,
     evaluation_strategy="steps",
@@ -122,37 +152,11 @@ trainer = Trainer(
 
 model.config.use_cache = False
 
-os.environ["WANDB_PROJECT"] = "mistral-pjf-ft-v2"
-
-# Log model when running HF Trainer reporting to wandb.
-os.environ["WANDB_LOG_MODEL"] = "end"  # Apparently this is deprecated in version 5 of transformers.
-
-# Use wandb to watch the gradients & model parameters.
-os.environ["WANDB_WATCH"] = "all"
-
-run = wandb.init(
-    project="mistral-pjf-ft-v2",  # Project name.
-    name="save model",          # name of the run within this project.
-    config={                     # Configuration dictionary.
-        "split": "train"
-    },
-    group="train",             # Group runs. This run belongs in "dataset".
-    tags=["train"],            # Tags. More dynamic, low-level grouping.
-    notes="init run"  # Description about the run.
-)  # Check out the other parameters in the `wandb.init`!
-
 results = trainer.train()
+
+trainer.save_model()
 
 run.finish()
 
-# import os
-
-# os.environ["WANDB_PROJECT"] = "mistral-pjf-ft-v2"
-
-# # Log model when running HF Trainer reporting to wandb.
-# os.environ["WANDB_LOG_MODEL"] = "true"  # Apparently this is deprecated in version 5 of transformers.
-
-# # Use wandb to watch the gradients & model parameters.
-# os.environ["WANDB_WATCH"] = "all"
-
-# print("wandb:", os.environ.get("WANDB_LOG_MODEL"))
+model.config.use_cache = True
+model.eval()
