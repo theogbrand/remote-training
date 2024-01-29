@@ -13,6 +13,7 @@ from trl import DPOTrainer
 import bitsandbytes as bnb
 
 import wandb
+from huggingface_hub import login
 from dotenv import load_dotenv
 
 load_dotenv() 
@@ -21,6 +22,8 @@ load_dotenv()
 hf_token = os.getenv("HF_token")
 wb_token = os.getenv("wandb_token")
 wandb.login(key=wb_token)
+login(token=hf_token)
+
 
 # model_name = "teknium/OpenHermes-2.5-Mistral-7B"
 # new_model = "NeuralHermes-2.5-Mistral-7B"
