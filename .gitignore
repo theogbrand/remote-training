@@ -6,3 +6,5 @@ wandb
 results
 artifacts
 outputs
+venv
+.env
