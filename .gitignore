@@ -8,3 +8,4 @@ artifacts
 outputs
 venv
 .env
+merged_models
